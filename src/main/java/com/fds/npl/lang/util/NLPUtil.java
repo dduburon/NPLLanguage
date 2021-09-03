@@ -7,6 +7,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Stack;
 
+import org.apache.commons.lang3.ArrayUtils;
 import opennlp.tools.postag.POSModel;
 import opennlp.tools.postag.POSTaggerME;
 import opennlp.tools.tokenize.SimpleTokenizer;
@@ -61,10 +62,13 @@ public class NLPUtil {
 	}
 
 	public NPLArticle ignore(String... tags) {
+		if (a.found) {
+			a.andThen();
+		}
 		if(!a.failure) {
 			String lastToken = a.peekToken("");
 			NPLArticle temp = a.copy();
-			if (expect(tags).peekToken("").length() != lastToken.length()) {
+			if (!expect(tags).peekToken("").equals(lastToken)) {
 				a = temp;
 				a.increment();
 			}
@@ -83,7 +87,7 @@ public class NLPUtil {
 		String lastToken = a.peekToken("");
 		NPLArticle temp = a.copy();
 		String tokenFound = expect(tags).peekToken("");
-		if (tokenFound.length() != lastToken.length()) {
+		if (!tokenFound.equals(lastToken)) {
 			a = temp;
 			a.increment();
 		} else {
@@ -93,8 +97,11 @@ public class NLPUtil {
 	}
 
 	public NPLArticle expectProperNoun() {
-		return ignore(leftParens).andThen().expectStartsWith("N").or().expect("DT").andMaybe().expect(".").disregardIfNotFound()
-				.andMaybe().expect("NNP", "NNPS").disregardIfNotFound();
+		//Some special conditions here for Initials. "A" is a DT (like A/An) and "C" is a LS (List Item marker like A. B. C.)
+		return expectStartsWith("N").or().expect("DT").or().expect("LS").andMaybe().expect(".").disregardIfNotFound()
+				.andMaybe().expectStartsWith("N").disregardIfNotFound()
+				//Hyphenated name? I don't know why a "-"'s tag is a ":"
+				.andMaybe().expect(":").andThen().expectStartsWith("N").disregardIfNotFound();
 
 	}
 	public NPLArticle expectProperNounOld() {
@@ -119,21 +126,32 @@ public class NLPUtil {
 	}
 
 	public NPLArticle expectCommonNoun() {
-		//Can Verbs to more than on token like Nouns?
-		return expectOneOrMany("NN", "NNS");
+		return expectStartWithOneOrMany("NN", "NNS");
+	}
+
+	public NPLArticle expectAnyNoun() {
+		return expectProperNoun().or().expectCommonNoun();
 	}
 
 	public NPLArticle expectVerb() {
+		//Can Verbs to more than on token like Nouns?
 		return expectStartWithOneOrMany("V");
+	}
+
+	public NPLArticle expectAdjective() {
+		return expectStartWithOneOrMany("JJ");
 	}
 
 	public NPLArticle expectStartWithOneOrMany(String... tags) {
 		if (!a.found || a.failure) {
 			String lastToken = a.getLastToken("");
+			int maybeCount = a.maybes == null ? 0 : a.maybes.size();
 			while(true) {
 				expectStartsWith(tags);
 				if (lastToken.equals(a.getLastToken("")) || !a.hasNext()) {
-					a.disregardIfNotFound();
+					if (a.maybes != null && maybeCount < a.maybes.size()) {
+						a.disregardIfNotFound();
+					}
 					break;
 				} else {
 					a.andMaybe();
@@ -146,11 +164,14 @@ public class NLPUtil {
 
 	public NPLArticle expectOneOrMany(String... tags) {
 		if (!a.found || a.failure) {
+			int maybeCount = a.maybes == null ? 0 : a.maybes.size();
 			String lastToken = a.getLastToken("");
 			while(true) {
 				expect(tags);
 				if (lastToken.equals(a.getLastToken("")) || !a.hasNext()) {
-					a.disregardIfNotFound();
+					if (a.maybes != null && maybeCount < a.maybes.size() && a.maybes.size() != 0) {
+						a.disregardIfNotFound();
+					}
 					break;
 				} else {
 					a.andMaybe();
@@ -224,6 +245,11 @@ public class NLPUtil {
 		return Arrays.copyOfRange(arr, i, arr.length);
 	}
 
+	protected void removeFromIndex(int i) {
+		ArrayUtils.remove(tokens, i);
+		ArrayUtils.remove(tags, i);
+	}
+
 	public class NPLArticle {
 		boolean found = false, failure = false, openDoubleQuote = false, openSingleQuote = false;
 		Stack<NPLArticle> maybes;
@@ -231,6 +257,10 @@ public class NLPUtil {
 		String tag;
 		String token = null, lastToken = null;
 		int i;
+
+		public NPLArticle() {
+			startOver();
+		}
 
 		public NPLArticle copy() {
 			NPLArticle art = new NPLArticle();
@@ -240,6 +270,7 @@ public class NLPUtil {
 			art.tag = this.tag;
 			art.token = this.token;
 			art.i = this.i;
+			art.maybes = this.maybes;
 			return art;
 		}
 
@@ -357,20 +388,22 @@ public class NLPUtil {
 			if (maybes.isEmpty()) {
 				logger.warn("Called Nevermind without first calling Maybe. This is not proper usage.");
 			}
-			NLPUtil.this.setArticle(maybes.pop());
+			NPLArticle pop = maybes.pop();
+			NLPUtil.this.setArticle(pop);
 			return NLPUtil.this;
 		}
 
 		public NPLArticle disregardIfNotFound() {
+			NLPUtil retUtil = NLPUtil.this;
 			if (maybes == null || maybes.isEmpty()) {
 				logger.warn("Called Nevermind without first calling andMaybe(). This is not proper usage.");
-			} else if (token.equals(maybes.get(maybes.size() - 1).token)) {
-				nevermind();
+			} else if (token == null || token.equals(maybes.get(maybes.size() - 1).token)) {
+				retUtil = nevermind();
 			} else {
 				maybes.pop();
 				found = true;
 			}
-			return NLPUtil.this.getArticle();
+			return retUtil.getArticle();
 		}
 
 		public NLPUtil ifNext() {
